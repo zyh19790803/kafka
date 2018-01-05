@@ -1,14 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements. See the NOTICE
- * file distributed with this work for additional information regarding copyright ownership. The ASF licenses this file
- * to You under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the
- * License. You may obtain a copy of the License at
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
- * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.apache.kafka.common.config;
 
@@ -51,11 +55,16 @@ public class AbstractConfig {
     @SuppressWarnings("unchecked")
     public AbstractConfig(ConfigDef definition, Map<?, ?> originals, boolean doLog) {
         /* check that all the keys are really strings */
-        for (Object key : originals.keySet())
-            if (!(key instanceof String))
-                throw new ConfigException(key.toString(), originals.get(key), "Key must be a string.");
+        for (Map.Entry<?, ?> entry : originals.entrySet())
+            if (!(entry.getKey() instanceof String))
+                throw new ConfigException(entry.getKey().toString(), entry.getValue(), "Key must be a string.");
         this.originals = (Map<String, ?>) originals;
         this.values = definition.parse(this.originals);
+        Map<String, Object> configUpdates = postProcessParsedConfig(Collections.unmodifiableMap(this.values));
+        for (Map.Entry<String, Object> update : configUpdates.entrySet()) {
+            this.values.put(update.getKey(), update.getValue());
+        }
+        definition.parse(this.values);
         this.used = Collections.synchronizedSet(new HashSet<String>());
         this.definition = definition;
         if (doLog)
@@ -64,6 +73,17 @@ public class AbstractConfig {
 
     public AbstractConfig(ConfigDef definition, Map<?, ?> originals) {
         this(definition, originals, true);
+    }
+
+    /**
+     * Called directly after user configs got parsed (and thus default values got set).
+     * This allows to change default values for "secondary defaults" if required.
+     *
+     * @param parsedValues unmodifiable map of current configuration
+     * @return a map of updates that should be applied to the configuration (will be validated to prevent bad updates)
+     */
+    protected Map<String, Object> postProcessParsedConfig(Map<String, Object> parsedValues) {
+        return Collections.emptyMap();
     }
 
     protected Object get(String key) {
@@ -104,6 +124,13 @@ public class AbstractConfig {
 
     public String getString(String key) {
         return (String) get(key);
+    }
+
+    public ConfigDef.Type typeOf(String key) {
+        ConfigDef.ConfigKey configKey = definition.configKeys().get(key);
+        if (configKey == null)
+            return null;
+        return configKey.type;
     }
 
     public Password getPassword(String key) {
@@ -149,10 +176,25 @@ public class AbstractConfig {
      * @return a Map containing the settings with the prefix
      */
     public Map<String, Object> originalsWithPrefix(String prefix) {
+        return originalsWithPrefix(prefix, true);
+    }
+
+    /**
+     * Gets all original settings with the given prefix.
+     *
+     * @param prefix the prefix to use as a filter
+     * @param strip strip the prefix before adding to the output if set true
+     * @return a Map containing the settings with the prefix
+     */
+    public Map<String, Object> originalsWithPrefix(String prefix, boolean strip) {
         Map<String, Object> result = new RecordingMap<>(prefix, false);
         for (Map.Entry<String, ?> entry : originals.entrySet()) {
-            if (entry.getKey().startsWith(prefix) && entry.getKey().length() > prefix.length())
-                result.put(entry.getKey().substring(prefix.length()), entry.getValue());
+            if (entry.getKey().startsWith(prefix) && entry.getKey().length() > prefix.length()) {
+                if (strip)
+                    result.put(entry.getKey().substring(prefix.length()), entry.getValue());
+                else
+                    result.put(entry.getKey(), entry.getValue());
+            }
         }
         return result;
     }
@@ -233,7 +275,7 @@ public class AbstractConfig {
      * @return The list of configured instances
      */
     public <T> List<T> getConfiguredInstances(String key, Class<T> t) {
-        return getConfiguredInstances(key, t, Collections.EMPTY_MAP);
+        return getConfiguredInstances(key, t, Collections.<String, Object>emptyMap());
     }
 
     /**

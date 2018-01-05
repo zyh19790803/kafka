@@ -1,14 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements. See the NOTICE
- * file distributed with this work for additional information regarding copyright ownership. The ASF licenses this file
- * to You under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the
- * License. You may obtain a copy of the License at
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
- * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.apache.kafka.common.config;
 
@@ -22,6 +26,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
@@ -68,23 +73,27 @@ import java.util.Set;
  * functionality for accessing configs.
  */
 public class ConfigDef {
-
-    public static final Object NO_DEFAULT_VALUE = new String("");
+    /**
+     * A unique Java object which represents the lack of a default value.
+     */
+    public static final Object NO_DEFAULT_VALUE = new Object();
 
     private final Map<String, ConfigKey> configKeys;
     private final List<String> groups;
     private Set<String> configsWithNoParent;
 
     public ConfigDef() {
-        configKeys = new HashMap<>();
+        configKeys = new LinkedHashMap<>();
         groups = new LinkedList<>();
         configsWithNoParent = null;
     }
 
     public ConfigDef(ConfigDef base) {
-        configKeys = new HashMap<>(base.configKeys);
+        configKeys = new LinkedHashMap<>(base.configKeys);
         groups = new LinkedList<>(base.groups);
-        configsWithNoParent = base.configsWithNoParent == null ? null : new HashSet<>(base.configsWithNoParent);
+        // It is not safe to copy this from the parent because we may subsequently add to the set of configs and
+        // invalidate this
+        configsWithNoParent = null;
     }
 
     /**
@@ -125,7 +134,7 @@ public class ConfigDef {
      */
     public ConfigDef define(String name, Type type, Object defaultValue, Validator validator, Importance importance, String documentation,
                             String group, int orderInGroup, Width width, String displayName, List<String> dependents, Recommender recommender) {
-        return define(new ConfigKey(name, type, defaultValue, validator, importance, documentation, group, orderInGroup, width, displayName, dependents, recommender));
+        return define(new ConfigKey(name, type, defaultValue, validator, importance, documentation, group, orderInGroup, width, displayName, dependents, recommender, false));
     }
 
     /**
@@ -375,6 +384,19 @@ public class ConfigDef {
     }
 
     /**
+     * Define a new internal configuration. Internal configuration won't show up in the docs and aren't
+     * intended for general use.
+     * @param name              The name of the config parameter
+     * @param type              The type of the config
+     * @param defaultValue      The default value to use if this config isn't present
+     * @param importance
+     * @return This ConfigDef so you can chain calls
+     */
+    public ConfigDef defineInternal(final String name, final Type type, final Object defaultValue, final Importance importance) {
+        return define(new ConfigKey(name, type, defaultValue, null, importance, "", "", -1, Width.NONE, name, Collections.<String>emptyList(), null, true));
+    }
+
+    /**
      * Get the configuration keys
      * @return a map containing all configuration keys
      */
@@ -437,7 +459,7 @@ public class ConfigDef {
         if (isSet) {
             parsedValue = parseType(key.name, value, key.type);
         // props map doesn't contain setting, the key is required because no default value specified - its an error
-        } else if (key.defaultValue == NO_DEFAULT_VALUE) {
+        } else if (NO_DEFAULT_VALUE.equals(key.defaultValue)) {
             throw new ConfigException("Missing required configuration \"" + key.name + "\" which has no default value.");
         } else {
             // otherwise assign setting its default value
@@ -508,7 +530,8 @@ public class ConfigDef {
         return new ArrayList<>(undefinedConfigKeys);
     }
 
-    private Set<String> getConfigsWithNoParent() {
+    // package accessible for testing
+    Set<String> getConfigsWithNoParent() {
         if (this.configsWithNoParent != null) {
             return this.configsWithNoParent;
         }
@@ -539,7 +562,7 @@ public class ConfigDef {
             } catch (ConfigException e) {
                 config.addErrorMessage(e.getMessage());
             }
-        } else if (key.defaultValue == NO_DEFAULT_VALUE) {
+        } else if (NO_DEFAULT_VALUE.equals(key.defaultValue)) {
             config.addErrorMessage("Missing required configuration \"" + key.name + "\" which has no default value.");
         } else {
             value = key.defaultValue;
@@ -716,7 +739,7 @@ public class ConfigDef {
                 return Utils.join(valueList, ",");
             case CLASS:
                 Class<?> clazz = (Class<?>) parsedValue;
-                return clazz.getCanonicalName();
+                return clazz.getName();
             default:
                 throw new IllegalStateException("Unknown type.");
         }
@@ -812,7 +835,7 @@ public class ConfigDef {
 
         public void ensureValid(String name, Object o) {
             if (o == null)
-                throw new ConfigException(name, o, "Value must be non-null");
+                throw new ConfigException(name, null, "Value must be non-null");
             Number n = (Number) o;
             if (min != null && n.doubleValue() < min.doubleValue())
                 throw new ConfigException(name, o, "Value must be at least " + min);
@@ -844,6 +867,7 @@ public class ConfigDef {
 
         @Override
         public void ensureValid(final String name, final Object value) {
+            @SuppressWarnings("unchecked")
             List<String> values = (List<String>) value;
             for (String string : values) {
                 validString.ensureValid(name, string);
@@ -880,6 +904,22 @@ public class ConfigDef {
         }
     }
 
+    public static class NonEmptyString implements Validator {
+
+        @Override
+        public void ensureValid(String name, Object o) {
+            String s = (String) o;
+            if (s != null && s.isEmpty()) {
+                throw new ConfigException(name, o, "String must be non-empty");
+            }
+        }
+
+        @Override
+        public String toString() {
+            return "non-empty string";
+        }
+    }
+
     public static class ConfigKey {
         public final String name;
         public final Type type;
@@ -893,14 +933,16 @@ public class ConfigDef {
         public final String displayName;
         public final List<String> dependents;
         public final Recommender recommender;
+        public final boolean internalConfig;
 
         public ConfigKey(String name, Type type, Object defaultValue, Validator validator,
                          Importance importance, String documentation, String group,
                          int orderInGroup, Width width, String displayName,
-                         List<String> dependents, Recommender recommender) {
+                         List<String> dependents, Recommender recommender,
+                         boolean internalConfig) {
             this.name = name;
             this.type = type;
-            this.defaultValue = defaultValue == NO_DEFAULT_VALUE ? NO_DEFAULT_VALUE : parseType(name, defaultValue, type);
+            this.defaultValue = NO_DEFAULT_VALUE.equals(defaultValue) ? NO_DEFAULT_VALUE : parseType(name, defaultValue, type);
             this.validator = validator;
             this.importance = importance;
             if (this.validator != null && hasDefault())
@@ -912,10 +954,11 @@ public class ConfigDef {
             this.width = width;
             this.displayName = displayName;
             this.recommender = recommender;
+            this.internalConfig = internalConfig;
         }
 
         public boolean hasDefault() {
-            return this.defaultValue != NO_DEFAULT_VALUE;
+            return !NO_DEFAULT_VALUE.equals(this.defaultValue);
         }
     }
 
@@ -964,6 +1007,9 @@ public class ConfigDef {
         }
         b.append("</tr>\n");
         for (ConfigKey key : configs) {
+            if (key.internalConfig) {
+                continue;
+            }
             b.append("<tr>\n");
             // print column values
             for (String headerName : headers()) {
@@ -984,6 +1030,9 @@ public class ConfigDef {
     public String toRst() {
         StringBuilder b = new StringBuilder();
         for (ConfigKey key : sortedConfigs()) {
+            if (key.internalConfig) {
+                continue;
+            }
             getConfigKeyRst(key, b);
             b.append("\n");
         }
@@ -999,6 +1048,9 @@ public class ConfigDef {
 
         String lastKeyGroupName = "";
         for (ConfigKey key : sortedConfigs()) {
+            if (key.internalConfig) {
+                continue;
+            }
             if (key.group != null) {
                 if (!lastKeyGroupName.equalsIgnoreCase(key.group)) {
                     b.append(key.group).append("\n");
@@ -1107,8 +1159,8 @@ public class ConfigDef {
                     key.width,
                     key.displayName,
                     embeddedDependents(keyPrefix, key.dependents),
-                    embeddedRecommender(keyPrefix, key.recommender)
-            ));
+                    embeddedRecommender(keyPrefix, key.recommender),
+                    key.internalConfig));
         }
     }
 
